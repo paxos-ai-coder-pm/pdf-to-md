@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF → Markdown</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --card: #fff; --text: #1a1a1a; --muted: #666; --border: #ddd;
+    --accent: #2563eb; --accent-bg: #eff4ff; --ok: #15803d; --err: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111214; --card: #1b1c1f; --text: #e8e8e8; --muted: #999; --border: #333;
+      --accent: #60a5fa; --accent-bg: #172033; --ok: #4ade80; --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 20px 60px; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  #drop {
+    border: 2px dashed var(--border); border-radius: 12px; padding: 40px 20px; text-align: center;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  #drop.over, #drop:hover { border-color: var(--accent); background: var(--accent-bg); }
+  #drop strong { color: var(--accent); }
+  .opts { display: flex; flex-wrap: wrap; gap: 16px 28px; margin-top: 16px; align-items: center; }
+  .opts label { display: flex; gap: 8px; align-items: center; color: var(--muted); }
+  input[type=text], select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; font: inherit;
+  }
+  input[type=text] { width: 110px; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 12px;
+    font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  button:disabled { opacity: .5; cursor: default; }
+  #files { list-style: none; padding: 0; margin: 0; }
+  #files li {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; cursor: pointer;
+  }
+  #files li:hover, #files li.active { background: var(--accent-bg); }
+  #files .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #files .status { font-size: 13px; color: var(--muted); }
+  #files .status.ok { color: var(--ok); }
+  #files .status.err { color: var(--err); }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; }
+  .toolbar .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toolbar .actions { display: flex; gap: 8px; flex-shrink: 0; }
+  textarea {
+    width: 100%; height: 480px; resize: vertical; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+    font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  .hidden { display: none; }
+  footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>PDF → Markdown</h1>
+  <p class="sub">Drop PDFs to convert them to clean Markdown with headings, lists, and tables. Files are processed on this server only.
+  Scanned or image-only PDFs are OCR'd automatically, which takes about 2–3 minutes for a 300-page book.</p>
+
+  <section class="card">
+    <div id="drop" tabindex="0">
+      <div><strong>Choose PDF files</strong> or drag them here</div>
+      <div class="sub" style="margin:6px 0 0">Multiple files supported</div>
+      <input id="picker" type="file" accept="application/pdf,.pdf" multiple hidden>
+    </div>
+    <div class="opts">
+      <label>Pages <input id="pages" type="text" placeholder="all, e.g. 1-3,7"></label>
+      <label>Images
+        <select id="images">
+          <option value="none">Skip</option>
+          <option value="embed">Embed (base64)</option>
+        </select>
+      </label>
+      <label>OCR
+        <select id="ocr">
+          <option value="auto">Auto (pages without text)</option>
+          <option value="always">Always</option>
+          <option value="never">Off</option>
+        </select>
+      </label>
+      <label><input id="separators" type="checkbox"> Page separators</label>
+    </div>
+  </section>
+
+  <section class="card hidden" id="filesCard">
+    <div class="toolbar">
+      <div class="title">Files</div>
+      <div class="actions">
+        <button class="ghost" id="clearAll">Clear</button>
+        <button id="downloadAll" disabled>Download all</button>
+      </div>
+    </div>
+    <ul id="files"></ul>
+  </section>
+
+  <section class="card hidden" id="previewCard">
+    <div class="toolbar">
+      <div class="title" id="previewTitle"></div>
+      <div class="actions">
+        <button class="ghost" id="copy">Copy</button>
+        <button id="download">Download .md</button>
+      </div>
+    </div>
+    <textarea id="output" readonly spellcheck="false"></textarea>
+  </section>
+
+  <footer>pdf2md · powered by PyMuPDF4LLM</footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const drop = $("drop"), picker = $("picker"), list = $("files");
+const results = [];  // { name, md, error, li }
+let active = null;
+
+drop.addEventListener("click", () => picker.click());
+drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") picker.click(); });
+picker.addEventListener("change", () => { handle(picker.files); picker.value = ""; });
+["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => handle(e.dataTransfer.files));
+
+async function handle(fileList) {
+  const pdfs = [...fileList].filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+  if (!pdfs.length) return alert("Please choose PDF files.");
+  $("filesCard").classList.remove("hidden");
+  // Convert sequentially to keep server load predictable.
+  for (const file of pdfs) await convertOne(file);
+}
+
+async function convertOne(file) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="name"></span><span class="status">Converting…</span>`;
+  li.querySelector(".name").textContent = file.name;
+  list.appendChild(li);
+  const entry = { name: file.name.replace(/\.pdf$/i, "") + ".md", md: null, error: null, li };
+  results.push(entry);
+  li.addEventListener("click", () => entry.md !== null && show(entry));
+
+  const params = new URLSearchParams({
+    images: $("images").value,
+    separators: $("separators").checked ? "1" : "0",
+    ocr: $("ocr").value,
+  });
+  const pages = $("pages").value.trim();
+  if (pages) params.set("pages", pages);
+
+  const status = li.querySelector(".status");
+  const t0 = performance.now();
+  const secs = () => Math.round((performance.now() - t0) / 1000);
+  const timer = setInterval(() => (status.textContent = `Converting… ${secs()}s`), 1000);
+  try {
+    const res = await fetch("/convert?" + params, {
+      method: "POST", headers: { "Content-Type": "application/pdf" }, body: file,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || res.statusText);
+    }
+    entry.md = await res.text();
+    status.textContent = `Done · ${secs()}s · ${(entry.md.length / 1024).toFixed(0)} KB`;
+    status.className = "status ok";
+    if (!active) show(entry);
+  } catch (err) {
+    entry.error = err.message;
+    status.textContent = err.message;
+    status.className = "status err";
+  } finally {
+    clearInterval(timer);
+  }
+  $("downloadAll").disabled = !results.some((r) => r.md !== null);
+}
+
+function show(entry) {
+  active?.li.classList.remove("active");
+  active = entry;
+  entry.li.classList.add("active");
+  $("previewCard").classList.remove("hidden");
+  $("previewTitle").textContent = entry.name;
+  $("output").value = entry.md;
+}
+
+function save(name, text) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+$("download").addEventListener("click", () => active && save(active.name, active.md));
+$("downloadAll").addEventListener("click", () => {
+  results.filter((r) => r.md !== null).forEach((r, i) => setTimeout(() => save(r.name, r.md), i * 250));
+});
+$("copy").addEventListener("click", async () => {
+  if (!active) return;
+  await navigator.clipboard.writeText(active.md);
+  $("copy").textContent = "Copied!";
+  setTimeout(() => ($("copy").textContent = "Copy"), 1200);
+});
+$("clearAll").addEventListener("click", () => {
+  results.length = 0; active = null; list.innerHTML = "";
+  $("filesCard").classList.add("hidden"); $("previewCard").classList.add("hidden");
+  $("downloadAll").disabled = true;
+});
+</script>
+</body>
+</html>
